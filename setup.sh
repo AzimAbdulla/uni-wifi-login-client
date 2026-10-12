@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==========================================================
-# Setup Script for Automatic G-VIT Wi-Fi Login on macOS
+# Setup Script for Automatic Campus Wi-Fi Login on macOS
 # ==========================================================
 
 set -e
@@ -11,62 +11,52 @@ PLIST_NAME="com.user.vitwifi.plist"
 TARGET_PLIST="$HOME/Library/LaunchAgents/$PLIST_NAME"
 PYTHON_BIN="$(which python3 || echo '/usr/bin/python3')"
 USER_ID_NUM=$(id -u)
+RAW_REPO_BASE="https://raw.githubusercontent.com/AzimAbdulla10/uni-wifi-login-client/main"
 
 echo ""
 echo "=========================================================="
-echo "         🎓 G-VIT Wi-Fi Auto-Login Setup"
+echo "         🎓 University Wi-Fi Auto-Login Setup"
 echo "=========================================================="
 echo ""
 
 # Handle --uninstall
-if [ "$1" = "--uninstall" ]; then
+if [ "$1" = "--uninstall" ] || [ "$1" = "uninstall" ]; then
     echo "Stopping and removing background LaunchAgent..."
     launchctl bootout "gui/$USER_ID_NUM" "$TARGET_PLIST" 2>/dev/null || true
     rm -f "$TARGET_PLIST"
     rm -rf "$INSTALL_DIR"
-    echo "✅ Background LaunchAgent removed."
-    echo "To remove credentials from Keychain:"
+    rm -f "$HOME/.local/bin/vit-wifi"
+    echo "✅ Background LaunchAgent and files removed."
+    echo ""
+    echo "To remove saved credentials from Keychain (optional):"
     echo "  security delete-generic-password -s 'VIT-WiFi'"
     echo ""
     echo "Uninstallation complete."
     exit 0
 fi
 
-# Step 1: Ensure executable permissions and deploy to ~/.vitwifi
-chmod +x "$DIR/wifi_login.py"
+# Step 1: Deploy wifi_login.py
 mkdir -p "$INSTALL_DIR"
-cp "$DIR/wifi_login.py" "$INSTALL_DIR/wifi_login.py"
+if [ -f "$DIR/wifi_login.py" ]; then
+    cp "$DIR/wifi_login.py" "$INSTALL_DIR/wifi_login.py"
+else
+    echo "Downloading latest wifi_login.py..."
+    curl -fsSL "$RAW_REPO_BASE/wifi_login.py" -o "$INSTALL_DIR/wifi_login.py"
+fi
 chmod +x "$INSTALL_DIR/wifi_login.py"
 
 # Step 2: Configure Credentials
-echo "Step 1: Configure Credentials"
-echo "-----------------------------------"
-read -p "Enter your University Reg / User ID: " USER_ID
-read -sp "Enter your Wi-Fi Portal Password: " USER_PASS
-echo ""
-
-if [ -z "$USER_ID" ] || [ -z "$USER_PASS" ]; then
-    echo "❌ Error: ID and Password cannot be blank."
-    exit 1
+echo "Checking credentials in macOS Keychain..."
+if "$PYTHON_BIN" -c 'import sys, subprocess, re; r=subprocess.run(["security","find-generic-password","-s","VIT-WiFi"],capture_output=True,text=True); sys.exit(0 if (r.returncode==0 and re.search(r"\"acct\"<blob>=\"[^\"]+\"", r.stdout+r.stderr)) else 1)' 2>/dev/null; then
+    echo "✅ Existing credentials found in macOS Keychain."
+else
+    echo "Opening setup window to enter credentials..."
+    "$PYTHON_BIN" "$INSTALL_DIR/wifi_login.py" set-credentials
 fi
 
+# Step 3: Install LaunchAgent (Active Background Daemon)
 echo ""
-echo "Choose where to store credentials:"
-echo "  1) macOS Keychain (Recommended - encrypted securely in Apple Keychain)"
-echo "  2) Local ~/.vit_wifi.env file (stored with restricted 600 permissions)"
-read -p "Select option [1/2, default: 1]: " STORAGE_CHOICE
-
-STORAGE="keychain"
-if [ "$STORAGE_CHOICE" = "2" ]; then
-    STORAGE="env"
-fi
-
-"$PYTHON_BIN" "$INSTALL_DIR/wifi_login.py" set-credentials -u "$USER_ID" -p "$USER_PASS" --storage "$STORAGE"
-
-# Step 3: Install LaunchAgent (Active Zero-Popup Watcher)
-echo ""
-echo "Step 2: Install Background Watcher Service (Zero-Popup Mode)"
-echo "-----------------------------------"
+echo "Installing Background Watcher Service..."
 mkdir -p "$HOME/Library/LaunchAgents"
 
 cat << PLIST_EOF > "$TARGET_PLIST"
@@ -94,10 +84,18 @@ cat << PLIST_EOF > "$TARGET_PLIST"
 </plist>
 PLIST_EOF
 
-# Reload via modern bootstrap
+# Reload LaunchAgent
 launchctl bootout "gui/$USER_ID_NUM" "$TARGET_PLIST" 2>/dev/null || true
-launchctl bootstrap "gui/$USER_ID_NUM" "$TARGET_PLIST"
-echo "✅ Background Watcher Daemon installed and active!"
+launchctl bootstrap "gui/$USER_ID_NUM" "$TARGET_PLIST" 2>/dev/null || launchctl load -w "$TARGET_PLIST"
+echo "✅ Background service installed and active!"
+
+# Step 4: Install helper terminal command 'vit-wifi'
+mkdir -p "$HOME/.local/bin"
+cat << 'WRAPPER_EOF' > "$HOME/.local/bin/vit-wifi"
+#!/bin/bash
+exec /usr/bin/python3 "$HOME/.vitwifi/wifi_login.py" "${@:-login}"
+WRAPPER_EOF
+chmod +x "$HOME/.local/bin/vit-wifi"
 
 echo ""
 echo "=========================================================="
@@ -107,8 +105,9 @@ echo ""
 "$PYTHON_BIN" "$INSTALL_DIR/wifi_login.py" status
 
 echo "Next steps:"
-echo "• When you connect to 'G-VIT', it will automatically log in and notify you!"
+echo "• When you connect to campus Wi-Fi, it connects automatically in the background!"
 echo "• Test manually anytime: vit-wifi"
 echo "• Check status:          vit-wifi status"
+echo "• Change credentials:    vit-wifi set-credentials"
 echo "• View activity log:     tail -f ~/Library/Logs/vitwifi.log"
 echo ""
